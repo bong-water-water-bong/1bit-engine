@@ -1,0 +1,19 @@
+[package]
+name = "onebit"
+version = "0.1.0"
+edition = "2024"
+description = "1-bit inference engine for AMD Strix Halo — pure Rust, zero Python"
+license = "MIT"
+repository = "https://github.com/bong-water-water-bong/1bit-engine"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }

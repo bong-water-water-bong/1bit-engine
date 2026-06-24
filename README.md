@@ -1,8 +1,13 @@
-# 1bit-engine
+# 1bit-engine v0.1.0
 
 **Pure Rust inference engine for AMD Strix Halo.** Zero Python. Zero C++ at
-the server layer. Wraps [rocm-cpp](https://github.com/bong-water-water-bong/rocm-cpp)
+the server layer. Wraps [rocm-cpp v0.2.0](https://github.com/bong-water-water-bong/rocm-cpp)
 kernels behind an OpenAI-compatible HTTP API.
+
+**Performance (ROCm 7.2.4, gfx1151, June 2026):**  
+Decode: 27 µs at 6912×2560 = **7.8× rocBLAS FP16**  
+Prefill: 21.9 TFlops at 2560×6912×2560 = 73% of rocBLAS, **2.9× per-byte**  
+See [rocm-cpp benchmarks](https://github.com/bong-water-water-bong/rocm-cpp/blob/main/results/BENCHMARK-20260623.md) for full data.
 
 ## Architecture
 

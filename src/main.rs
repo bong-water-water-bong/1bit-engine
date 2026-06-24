@@ -26,7 +26,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time::sleep;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 #[derive(Parser, Debug)]
 #[command(name = "onebit", about = "1-bit inference engine for Strix Halo")]
@@ -54,6 +54,18 @@ struct Args {
     /// Extra args to pass to bitnet_decode
     #[arg(long, default_value = "")]
     bitnet_args: String,
+
+    /// Run prefill kernel auto-tuning at startup (picks fastest variant)
+    #[arg(long)]
+    tune_prefill: bool,
+
+    /// Force a specific prefill variant (0=4i, 1=4h, 2=4k, 3=4f, 4=FP16-B, 5=4c, 6=4g)
+    #[arg(long)]
+    prefill_variant: Option<u8>,
+
+    /// Pre-decode weights to FP16 at load time for maximum prefill throughput
+    #[arg(long)]
+    fp16_weights: bool,
 }
 
 #[derive(Clone)]
@@ -94,6 +106,20 @@ async fn main() {
         .arg("--model")
         .arg(&args.model);
 
+    // Kernel tuning flags
+    if args.tune_prefill {
+        cmd.arg("--tune-prefill");
+        info!("Kernel auto-tuning enabled — will benchmark prefill variants at startup");
+    }
+    if let Some(v) = args.prefill_variant {
+        cmd.arg("--prefill-variant").arg(v.to_string());
+        info!("Forcing prefill variant: {v}");
+    }
+    if args.fp16_weights {
+        cmd.arg("--fp16-weights");
+        info!("FP16 weight pre-decode enabled — maximum prefill throughput");
+    }
+
     if !args.bitnet_args.is_empty() {
         for arg in args.bitnet_args.split_whitespace() {
             cmd.arg(arg);
@@ -105,7 +131,7 @@ async fn main() {
     cmd.env("HSA_ENABLE_SDMA", "0");
 
     info!("Starting bitnet_decode on port {backend_port}...");
-    let child = cmd
+    let mut child = cmd
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .spawn()
@@ -131,7 +157,6 @@ async fn main() {
                 }
             }
         }
-        // Check if child died
         if let Ok(Some(status)) = child.try_wait() {
             error!("bitnet_decode exited early with status: {status:?}");
             std::process::exit(1);
@@ -139,7 +164,6 @@ async fn main() {
         sleep(Duration::from_secs(1)).await;
     }
 
-    // Verify child is still alive
     if let Ok(Some(status)) = child.try_wait() {
         error!("bitnet_decode exited with status: {status:?}");
         std::process::exit(1);
@@ -178,10 +202,7 @@ async fn health() -> &'static str {
     "ok"
 }
 
-async fn proxy_get(
-    State(state): State<AppState>,
-    uri: axum::http::Uri,
-) -> Response {
+async fn proxy_get(State(state): State<AppState>, uri: axum::http::Uri) -> Response {
     let path = uri.path().to_string();
     let url = format!("{}{}", state.backend_url, path);
 
@@ -200,7 +221,7 @@ async fn proxy_get(
             response
         }
         Err(e) => {
-            error!("Proxy error: {e}");
+            error!("GET proxy error: {e}");
             StatusCode::BAD_GATEWAY.into_response()
         }
     }
@@ -220,7 +241,6 @@ async fn proxy_post(
         .post(&url)
         .header("Content-Type", "application/json");
 
-    // Pass through relevant headers
     if let Some(auth) = headers.get("authorization") {
         request = request.header("authorization", auth);
     }
@@ -235,7 +255,6 @@ async fn proxy_post(
                 .unwrap_or(false);
 
             if is_stream {
-                // Stream passthrough
                 let stream = resp.bytes_stream();
                 let body = Body::from_stream(stream);
                 let mut response = Response::new(body);
@@ -259,8 +278,127 @@ async fn proxy_post(
             }
         }
         Err(e) => {
-            error!("Proxy error: {e}");
+            error!("POST proxy error: {e}");
             StatusCode::BAD_GATEWAY.into_response()
         }
+    }
+}
+
+// ── Tests ──
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    fn test_app() -> Router {
+        let state = AppState {
+            client: reqwest::Client::new(),
+            backend_url: "http://127.0.0.1:1".into(),
+            _child: Arc::new(std::sync::Mutex::new(None)),
+        };
+        Router::new()
+            .route("/health", get(health))
+            .with_state(state)
+    }
+
+    #[tokio::test]
+    async fn health_returns_ok() {
+        let app = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn cli_args_parse() {
+        use clap::Parser;
+        let args =
+            Args::try_parse_from(["onebit", "--model", "test.h1b", "--port", "9999"]).unwrap();
+        assert_eq!(args.model, "test.h1b");
+        assert_eq!(args.port, 9999);
+        assert_eq!(args.host, "127.0.0.1");
+    }
+
+    #[test]
+    fn cli_args_defaults() {
+        use clap::Parser;
+        let args = Args::try_parse_from(["onebit"]).unwrap();
+        assert_eq!(args.model, "./model.h1b");
+        assert_eq!(args.port, 13305);
+        assert_eq!(args.host, "127.0.0.1");
+        assert_eq!(args.bitnet_decode, "bitnet_decode");
+    }
+
+    #[tokio::test]
+    async fn get_proxy_returns_bad_gateway_when_backend_down() {
+        let state = AppState {
+            client: reqwest::Client::new(),
+            backend_url: "http://127.0.0.1:65535".into(),
+            _child: Arc::new(std::sync::Mutex::new(None)),
+        };
+        let app = Router::new()
+            .route("/v1/models", get(proxy_get))
+            .with_state(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/models")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn post_proxy_returns_bad_gateway_when_backend_down() {
+        let state = AppState {
+            client: reqwest::Client::new(),
+            backend_url: "http://127.0.0.1:65535".into(),
+            _child: Arc::new(std::sync::Mutex::new(None)),
+        };
+        let app = Router::new()
+            .route("/v1/chat/completions", post(proxy_post))
+            .with_state(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"test"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn cli_args_tune_prefill() {
+        use clap::Parser;
+        let args = Args::try_parse_from(["onebit", "--tune-prefill"]).unwrap();
+        assert!(args.tune_prefill);
+        assert!(!args.fp16_weights);
+    }
+
+    #[test]
+    fn cli_args_fp16_weights() {
+        use clap::Parser;
+        let args =
+            Args::try_parse_from(["onebit", "--fp16-weights", "--prefill-variant", "4"]).unwrap();
+        assert!(args.fp16_weights);
+        assert_eq!(args.prefill_variant, Some(4));
     }
 }

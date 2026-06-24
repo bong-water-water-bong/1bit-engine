@@ -21,10 +21,55 @@ if [ "$ARCH" != "x86_64" ]; then
     err "Unsupported architecture: $ARCH. Strix Halo requires x86_64."
 fi
 
-INSTALL_DIR="${1:-$HOME/1bit}"
+INSTALL_DIR="$HOME/1bit"
+MODELS_DIR="${MODELS_DIR:-$HOME/models}"
+DRY_RUN=false
+SKIP_ROCM=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help|-h)
+            echo "Usage: curl ... | bash"
+            echo "       bash install.sh [DIR] [--dry-run] [--skip-rocm]"
+            echo ""
+            echo "  DIR          Install directory (default: ~/1bit)"
+            echo "  --dry-run    Show what would be done, don't install"
+            echo "  --skip-rocm  Skip rocm-cpp build (use pre-built binaries)"
+            echo ""
+            echo "Env vars:"
+            echo "  MODELS_DIR   Where to store models (default: ~/models)"
+            echo "  MODEL_URL    URL of pre-converted .h1b model to download"
+            echo "  RELEASE_TAG  rocm-cpp release tag (default: v0.2.0)"
+            exit 0
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --skip-rocm)
+            SKIP_ROCM=true
+            shift
+            ;;
+        -*)
+            echo "Unknown flag: $1. Use --help for usage."
+            exit 1
+            ;;
+        *)
+            INSTALL_DIR="$1"
+            shift
+            ;;
+    esac
+done
+
+if [ "$DRY_RUN" = true ]; then
+    log "Dry run mode — showing what would be installed:"
+    log "  Install dir: $INSTALL_DIR"
+    log "  Models dir:  $MODELS_DIR"
+    log "  ROCm build:  $([ "$SKIP_ROCM" = false ] && echo yes || echo skipped)"
+    exit 0
+fi
 ROCM_CPP_DIR="$INSTALL_DIR/rocm-cpp"
 ENGINE_DIR="$INSTALL_DIR/engine"
-MODELS_DIR="${MODELS_DIR:-$HOME/models}"
 MODEL_URL="${MODEL_URL:-}"
 RELEASE_TAG="${RELEASE_TAG:-v0.2.0}"
 
@@ -99,23 +144,27 @@ mkdir -p "$INSTALL_DIR" "$MODELS_DIR"
 
 # ── build rocm-cpp ──
 
-log "Building rocm-cpp (HIP kernels)..."
-if [ -d "$ROCM_CPP_DIR" ]; then
-    log "rocm-cpp already cloned, updating..."
-    (cd "$ROCM_CPP_DIR" && git pull origin main)
+if [ "$SKIP_ROCM" = true ]; then
+    warn "Skipping rocm-cpp build (--skip-rocm). You need a pre-built librocm_cpp.so and bitnet_decode on PATH."
 else
-    git clone https://github.com/bong-water-water-bong/rocm-cpp.git "$ROCM_CPP_DIR"
+    log "Building rocm-cpp (HIP kernels)..."
+    if [ -d "$ROCM_CPP_DIR" ]; then
+        log "rocm-cpp already cloned, updating..."
+        (cd "$ROCM_CPP_DIR" && git pull origin main)
+    else
+        git clone https://github.com/bong-water-water-bong/rocm-cpp.git "$ROCM_CPP_DIR"
+    fi
+
+    cd "$ROCM_CPP_DIR"
+    cmake -B build -G Ninja \
+        -DCMAKE_HIP_ARCHITECTURES=gfx1151 \
+        2>&1 | tail -3
+    ninja -C build rocm_cpp bitnet_decode 2>&1 | tail -3
+
+    log "rocm-cpp built successfully"
+    log "  library: $ROCM_CPP_DIR/build/librocm_cpp.so"
+    log "  binary:  $ROCM_CPP_DIR/build/bitnet_decode"
 fi
-
-cd "$ROCM_CPP_DIR"
-cmake -B build -G Ninja \
-    -DCMAKE_HIP_ARCHITECTURES=gfx1151 \
-    2>&1 | tail -3
-ninja -C build rocm_cpp bitnet_decode 2>&1 | tail -3
-
-log "rocm-cpp built successfully"
-log "  library: $ROCM_CPP_DIR/build/librocm_cpp.so"
-log "  binary:  $ROCM_CPP_DIR/build/bitnet_decode"
 
 # ── build 1bit-engine ──
 

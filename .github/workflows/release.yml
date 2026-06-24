@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build release binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/release/onebit dist/
+          cp install.sh dist/
+          cp README.md dist/
+          cp CLAUDE.md dist/
+          tar czf 1bit-engine-linux-x86_64.tar.gz -C dist .
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: 1bit-engine-linux-x86_64.tar.gz
+          generate_release_notes: true
+          prerelease: false

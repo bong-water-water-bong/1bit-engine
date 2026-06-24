@@ -7,49 +7,27 @@ kernels behind an OpenAI-compatible HTTP API.
 **Performance (ROCm 7.2.4, gfx1151, June 2026):**  
 Decode: 27 µs at 6912×2560 = **7.8× rocBLAS FP16**  
 Prefill: 21.9 TFlops at 2560×6912×2560 = 73% of rocBLAS, **2.9× per-byte**  
-See [rocm-cpp benchmarks](https://github.com/bong-water-water-bong/rocm-cpp/blob/main/results/BENCHMARK-20260623.md) for full data.
+See [rocm-cpp benchmarks](https://github.com/bong-water-water-bong/rocm-cpp/blob/main/results/BENCHMARK-20260623.md)
 
-## Architecture
-
-```
-onebit (:13305)   axum (Rust)  ←  your code here
-  │
-  └── bitnet_decode --server   rocm-cpp (C++/HIP)
-       └── librocm_cpp.so      ternary GEMV/GEMV kernels
-            └── gfx1151        Strix Halo iGPU
-```
-
-One binary. Spawns `bitnet_decode` as a subprocess, health-checks until ready,
-proxies all `/v1/*` requests with streaming passthrough.
-
-## Quick start
+## One-Command Install
 
 ```bash
-# Prerequisites: rocm-cpp built with bitnet_decode on PATH
-git clone https://github.com/bong-water-water-bong/1bit-engine
-cd 1bit-engine
-cargo build --release
-
-# Run with a .h1b model
-./target/release/onebit --model path/to/model.h1b --port 13305
+curl -fsSL https://raw.githubusercontent.com/bong-water-water-bong/1bit-engine/main/install.sh | bash
 ```
 
-## Usage
+Installs Rust, ROCm build deps, clones + builds rocm-cpp + 1bit-engine.
+Works on Ubuntu 24.04, Arch, CachyOS, Fedora.
 
-```
-USAGE:
-    onebit [OPTIONS]
+## Run
 
-OPTIONS:
-    -m, --model <MODEL>          Path to .h1b model file [default: ./model.h1b]
-    -p, --port <PORT>            Port for the OpenAI-compatible API [default: 13305]
-        --host <HOST>            Host to bind to [default: 127.0.0.1]
-        --bitnet-decode <PATH>   Path to bitnet_decode binary [default: bitnet_decode]
-        --backend-port <PORT>    Internal port for bitnet_decode [default: random]
-        --bitnet-args <ARGS>     Extra args to pass to bitnet_decode [default: ""]
+```bash
+source ~/.cargo/env
+export HSA_OVERRIDE_GFX_VERSION=11.5.1
+export HSA_ENABLE_SDMA=0
+~/1bit/engine/target/release/onebit --model model.h1b --port 13305 --tune-prefill --fp16-weights
 ```
 
-## Connect apps
+## Connect
 
 ```python
 from openai import OpenAI
@@ -60,8 +38,6 @@ print(client.chat.completions.create(
     max_tokens=20,
 ).choices[0].message.content)
 ```
-
-Any OpenAI-compatible client works — OpenWebUI, Continue.dev, Aider, n8n, Dify.
 
 ## Repos
 
